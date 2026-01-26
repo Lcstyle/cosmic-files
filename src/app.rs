@@ -445,7 +445,7 @@ pub enum Message {
     DndHoverTabTimeout(Entity),
     DndEnterNav(Entity),
     DndExitNav,
-    DndEnterTab(Entity),
+    DndEnterTab(Entity, Vec<String>),
     DndExitTab,
     DndDropTab(Entity, Option<ClipboardPaste>, DndAction),
     DndDropNav(Entity, Option<ClipboardPaste>, DndAction),
@@ -4402,11 +4402,13 @@ impl Application for App {
                     }
                 }
             }
-            Message::DndEnterTab(entity) => {
-                self.tab_dnd_hover = Some((entity, Instant::now()));
-                return Task::perform(tokio::time::sleep(HOVER_DURATION), move |()| {
-                    cosmic::Action::App(Message::DndHoverTabTimeout(entity))
-                });
+            Message::DndEnterTab(entity, mimes) => {
+                if mimes.iter().all(|m| m.as_str() != "x-cosmic-files/tab-dnd") {
+                    self.tab_dnd_hover = Some((entity, Instant::now()));
+                    return Task::perform(tokio::time::sleep(HOVER_DURATION), move |()| {
+                        cosmic::Action::App(Message::DndHoverTabTimeout(entity))
+                    });
+                }
             }
             Message::DndExitTab => {
                 self.nav_dnd_hover = None;
@@ -5797,14 +5799,12 @@ impl Application for App {
                     widget::tab_bar::horizontal(&self.tab_model)
                         .button_height(32)
                         .button_spacing(space_xxs)
-                        .enable_tab_drag(|_entity: Entity| {
-                            Some((String::from("text/uri-list"), vec![]))
-                        })
+                        .enable_tab_drag(String::from("x-cosmic-files/tab-dnd"))
                         .on_reorder(move |event| Message::ReorderTab(event))
                         .tab_drag_threshold(25.)
                         .on_activate(Message::TabActivate)
                         .on_close(|entity| Message::TabClose(Some(entity)))
-                        .on_dnd_enter(|entity, _| Message::DndEnterTab(entity))
+                        .on_dnd_enter(|entity, mimes| Message::DndEnterTab(entity, mimes))
                         .on_dnd_leave(|_| Message::DndExitTab)
                         .on_dnd_drop(|entity, data, action| {
                             Message::DndDropTab(entity, data, action)
