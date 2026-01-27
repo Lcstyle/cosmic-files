@@ -1481,10 +1481,10 @@ dependencies = [
 
 [[package]]
 name = "cosmic-files"
-version = "1.0.0"
+version = "1.0.4"
 dependencies = [
  "anyhow",
- "ashpd 0.12.0",
+ "ashpd 0.12.1",
  "bzip2",
  "chrono",
  "compio",
@@ -1526,6 +1526,8 @@ dependencies = [
  "rust-embed",
  "rustc-hash 2.1.1",
  "serde",
+ "sha1",
+ "sha2",
  "shlex",
  "slotmap",
  "tar",
@@ -1545,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-files-applet"
-version = "0.1.0"
+version = "1.0.4"
 dependencies = [
  "cosmic-files",
  "log",

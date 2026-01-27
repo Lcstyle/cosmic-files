@@ -101,10 +101,6 @@ use crate::{
     dialog::DialogSettings,
     zoom::{zoom_in_view, zoom_out_view, zoom_to_default},
 };
-use crate::{
-    operation::{OperationError, OperationErrorType},
-    tab::Item,
-};
 
 static PERMANENT_DELETE_BUTTON_ID: LazyLock<widget::Id> =
     LazyLock::new(|| widget::Id::new("permanent-delete-button"));
@@ -6414,9 +6410,6 @@ impl Application for App {
                     widget::tab_bar::horizontal(&self.tab_model)
                         .button_height(32)
                         .button_spacing(space_xxs)
-                        .enable_tab_drag(String::from("x-cosmic-files/tab-dnd"))
-                        .on_reorder(move |event| Message::ReorderTab(event))
-                        .tab_drag_threshold(25.)
                         .on_activate(Message::TabActivate)
                         .on_close(|entity| Message::TabClose(Some(entity)))
                         .on_dnd_enter(|entity, mimes| Message::DndEnterTab(entity, mimes))
