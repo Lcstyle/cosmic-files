@@ -101,6 +101,10 @@ use crate::{
     dialog::DialogSettings,
     zoom::{zoom_in_view, zoom_out_view, zoom_to_default},
 };
+use crate::{
+    operation::{OperationError, OperationErrorType},
+    tab::Item,
+};
 
 static PERMANENT_DELETE_BUTTON_ID: LazyLock<widget::Id> =
     LazyLock::new(|| widget::Id::new("permanent-delete-button"));
