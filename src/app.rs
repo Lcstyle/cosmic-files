@@ -2878,11 +2878,9 @@ impl Application for App {
             }
             Message::CopyPath(entity_opt) => {
                 let paths = self.selected_paths(entity_opt);
-                let text = paths
-                    .into_iter()
-                    .filter_map(|p| p.to_str().map(|s| s.to_string()))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let path_strings: Vec<String> =
+                    paths.into_iter().map(|p| p.display().to_string()).collect();
+                let text = path_strings.join("\n");
                 return clipboard::write(text);
             }
             Message::CreateDesktopEntry(entity_opt) => {
