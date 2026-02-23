@@ -168,6 +168,7 @@ pub struct Config {
     pub favorites: Vec<Favorite>,
     pub show_details: bool,
     pub show_folder_tree: bool,
+    pub show_recents: bool,
     pub tab: TabConfig,
     pub type_to_search: TypeToSearch,
 }
@@ -231,6 +232,7 @@ impl Default for Config {
             ],
             show_details: false,
             show_folder_tree: false,
+            show_recents: true,
             tab: TabConfig::default(),
             type_to_search: TypeToSearch::Recursive,
         }
