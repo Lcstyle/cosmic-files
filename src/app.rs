@@ -62,8 +62,8 @@ use crate::clipboard::{
     ClipboardPasteText, ClipboardPasteVideo,
 };
 use crate::config::{
-    AppTheme, Config, DesktopConfig, Favorite, IconSizes, State, TIME_CONFIG_ID, TabConfig,
-    TimeConfig, TypeToSearch,
+    AppTheme, Config, DesktopConfig, DesktopOutput, Favorite, IconSizes, State, TIME_CONFIG_ID,
+    TabConfig, TimeConfig, TypeToSearch,
 };
 use crate::dialog::{Dialog, DialogKind, DialogMessage, DialogResult, DialogSettings};
 use crate::key_bind::key_binds;
@@ -348,6 +348,7 @@ pub enum Message {
     Cut(Option<Entity>),
     Delete(Option<Entity>),
     DesktopConfig(DesktopConfig),
+    DesktopOutput(DesktopOutput),
     DesktopViewOptions,
     DesktopDialogs(bool),
     DialogCancel,
@@ -757,6 +758,9 @@ pub struct App {
     layer_sizes: FxHashMap<window::Id, Size>,
     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
     surface_ids: FxHashMap<WlOutput, WindowId>,
+    /// Name of every known output, including those excluded from the desktop.
+    #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+    display_names: FxHashMap<WlOutput, String>,
     #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
     surface_names: FxHashMap<WindowId, String>,
     toasts: widget::toaster::Toasts<Message>,
@@ -1706,6 +1710,117 @@ impl App {
         Task::batch(commands)
     }
 
+    /// Create the desktop layer surface for `output`, unless the configured
+    /// "Show desktop icons on" selection excludes it.
+    #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+    fn create_desktop_surface(
+        &mut self,
+        output: WlOutput,
+        surface_id: WindowId,
+        display: String,
+    ) -> Task<Message> {
+        let output_id = output.id();
+
+        // An excluded output gets no desktop surface at all. Undo the
+        // bookkeeping the caller did so a later reconnect starts clean.
+        if !self.config.desktop_output.shows_on(&display) {
+            log::info!("output {output_id}: not a selected desktop display, skipping");
+            self.surface_ids.remove(&output);
+            self.surface_names.remove(&surface_id);
+            return Task::none();
+        }
+
+        let (entity, command) = self.open_tab_entity(
+            Location::Desktop(crate::desktop_dir(), display, self.config.desktop),
+            false,
+            None,
+            widget::Id::unique(),
+            Some(surface_id),
+        );
+        self.windows
+            .insert(surface_id, Window::new(WindowKind::Desktop(entity)));
+        return Task::batch([
+            command,
+            cosmic::task::message(cosmic::action::cosmic(cosmic::app::Action::Surface(
+                cosmic::surface::action::app_layer_shell(
+                    |_| Default::default(),
+                    move |_: &mut App| SctkLayerSurfaceSettings {
+                        id: surface_id,
+                        layer: Layer::Bottom,
+                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                        input_zone: None,
+                        anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+                        output: IcedOutput::Output(output.clone()),
+                        namespace: "cosmic-files-applet".into(),
+                        size: Some((None, None)),
+                        margin: IcedMargin {
+                            top: 0,
+                            bottom: 0,
+                            left: 0,
+                            right: 0,
+                        },
+                        exclusive_zone: 0,
+                        size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
+                    },
+                    None,
+                ),
+            ))),
+            #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+            overlap_notify(surface_id, true),
+        ]);
+    }
+
+    /// Apply the current "Show desktop icons on" selection to the displays that
+    /// are already connected.
+    ///
+    /// Changing the setting has to take effect now, not at the next hotplug, so
+    /// walk every known output and create or destroy its desktop surface to
+    /// match. `update_desktop` only refreshes surfaces that already exist, so it
+    /// cannot do this on its own.
+    #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+    fn apply_desktop_output(&mut self) -> Task<Message> {
+        let known: Vec<(WlOutput, String)> = self
+            .display_names
+            .iter()
+            .map(|(output, display)| (output.clone(), display.clone()))
+            .collect();
+
+        let mut tasks = Vec::new();
+        for (output, display) in known {
+            let wanted = self.config.desktop_output.shows_on(&display);
+            match (wanted, self.surface_ids.get(&output).copied()) {
+                // Selected and already shown: only the contents need refreshing.
+                (true, Some(_)) => {}
+                // Selected but not shown yet.
+                (true, None) => {
+                    let surface_id = WindowId::unique();
+                    self.surface_ids.insert(output.clone(), surface_id);
+                    self.surface_names.insert(surface_id, display.clone());
+                    tasks.push(self.create_desktop_surface(output, surface_id, display));
+                }
+                // No longer selected but still shown.
+                (false, Some(surface_id)) => {
+                    log::info!("display {display}: hiding desktop surface");
+                    self.surface_ids.remove(&output);
+                    self.surface_names.remove(&surface_id);
+                    self.remove_window(&surface_id);
+                    tasks.push(destroy_layer_surface(surface_id));
+                }
+                (false, None) => {}
+            }
+        }
+
+        tasks.push(self.update_desktop());
+        Task::batch(tasks)
+    }
+
+    /// Without the Wayland desktop applet there are no per-display surfaces to
+    /// add or remove, so only the tab contents need refreshing.
+    #[cfg(not(all(feature = "wayland", feature = "desktop-applet")))]
+    fn apply_desktop_output(&mut self) -> Task<Message> {
+        self.update_desktop()
+    }
+
     fn update_desktop(&mut self) -> Task<Message> {
         let needs_reload: Box<[_]> = (self.tab_model.iter())
             .filter_map(|entity| {
@@ -1774,9 +1889,7 @@ impl App {
 
         for (favorite_i, favorite) in self.config.favorites.iter().enumerate() {
             if let Some(path) = favorite.path_opt() {
-                let name = favorite
-                    .display_name()
-                    .unwrap_or_else(|| fl!("filesystem"));
+                let name = favorite.display_name().unwrap_or_else(|| fl!("filesystem"));
                 nav_model = nav_model.insert(move |b| {
                     b.text(name.clone())
                         .icon(
@@ -2012,6 +2125,38 @@ impl App {
                     })
                 },
             ));
+
+        // The display list only exists on the Wayland desktop build.
+        #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+        let show_on_desktop = show_on_desktop.add({
+            // "All displays" first, then every known output, mirroring the
+            // panel's "Show on display".
+            let mut names: Vec<String> = self.display_names.values().cloned().collect();
+            names.sort();
+            names.dedup();
+            let mut options = vec![fl!("all-displays")];
+            options.extend(names.iter().cloned());
+            let selected = match &self.config.desktop_output {
+                DesktopOutput::All => 0,
+                DesktopOutput::Name(name) => names
+                    .iter()
+                    .position(|n| n == name)
+                    .map_or(0, |index| index + 1),
+            };
+            settings::item::builder(fl!("desktop-icons-display")).control(widget::dropdown(
+                options,
+                Some(selected),
+                move |index| {
+                    Message::DesktopOutput(match index.checked_sub(1) {
+                        Some(index) => names
+                            .get(index)
+                            .cloned()
+                            .map_or(DesktopOutput::All, DesktopOutput::Name),
+                        None => DesktopOutput::All,
+                    })
+                },
+            ))
+        });
 
         let icon_size = config.icon_size;
         let grid_spacing = config.grid_spacing;
@@ -2466,6 +2611,8 @@ impl Application for App {
             size: None,
             #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
             surface_ids: FxHashMap::default(),
+            #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+            display_names: FxHashMap::default(),
             #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
             surface_names: FxHashMap::default(),
             toasts: widget::toaster::Toasts::new(Message::CloseToast),
@@ -3076,6 +3223,12 @@ impl Application for App {
                             return self.delete(paths);
                         }
                     }
+                }
+            }
+            Message::DesktopOutput(desktop_output) => {
+                if desktop_output != self.config.desktop_output {
+                    config_set!(desktop_output, desktop_output);
+                    return self.apply_desktop_output();
                 }
             }
             Message::DesktopConfig(config) => {
@@ -5309,16 +5462,10 @@ impl Application for App {
                 }
 
                 NavMenuAction::ChangeSidebarLabel(entity) => {
-                    if let Some(favorite) = self
-                        .nav_model
-                        .data::<FavoriteIndex>(entity)
-                        .and_then(|FavoriteIndex(favorite_i)| {
-                            self.config.favorites.get(*favorite_i)
-                        })
-                    {
-                        let label = favorite
-                            .display_name()
-                            .unwrap_or_else(|| fl!("filesystem"));
+                    if let Some(favorite) = self.nav_model.data::<FavoriteIndex>(entity).and_then(
+                        |FavoriteIndex(favorite_i)| self.config.favorites.get(*favorite_i),
+                    ) {
+                        let label = favorite.display_name().unwrap_or_else(|| fl!("filesystem"));
                         return Task::batch([
                             self.dialog_pages
                                 .push_back(DialogPage::ChangeSidebarLabel { entity, label }),
@@ -5367,54 +5514,16 @@ impl Application for App {
                             }
                         };
 
-                        let (entity, command) = self.open_tab_entity(
-                            Location::Desktop(crate::desktop_dir(), display, self.config.desktop),
-                            false,
-                            None,
-                            widget::Id::unique(),
-                            Some(surface_id),
-                        );
-                        self.windows
-                            .insert(surface_id, Window::new(WindowKind::Desktop(entity)));
-                        return Task::batch([
-                            command,
-                            cosmic::task::message(cosmic::action::cosmic(
-                                cosmic::app::Action::Surface(
-                                    cosmic::surface::action::app_layer_shell(
-                                        |_| Default::default(),
-                                        move |_: &mut App| SctkLayerSurfaceSettings {
-                                            id: surface_id,
-                                            layer: Layer::Bottom,
-                                            keyboard_interactivity: KeyboardInteractivity::OnDemand,
-                                            input_zone: None,
-                                            anchor: Anchor::TOP
-                                                | Anchor::BOTTOM
-                                                | Anchor::LEFT
-                                                | Anchor::RIGHT,
-                                            output: IcedOutput::Output(output.clone()),
-                                            namespace: "cosmic-files-applet".into(),
-                                            size: Some((None, None)),
-                                            margin: IcedMargin {
-                                                top: 0,
-                                                bottom: 0,
-                                                left: 0,
-                                                right: 0,
-                                            },
-                                            exclusive_zone: 0,
-                                            size_limits: Limits::NONE
-                                                .min_width(1.0)
-                                                .min_height(1.0),
-                                        },
-                                        None,
-                                    ),
-                                ),
-                            )),
-                            #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
-                            overlap_notify(surface_id, true),
-                        ]);
+                        if !display.is_empty() {
+                            self.display_names.insert(output.clone(), display.clone());
+                        }
+
+                        return self.create_desktop_surface(output, surface_id, display);
                     }
                     OutputEvent::Removed => {
                         log::info!("output {}: removed", output.id());
+                        #[cfg(all(feature = "wayland", feature = "desktop-applet"))]
+                        self.display_names.remove(&output);
                         match self.surface_ids.remove(&output) {
                             Some(surface_id) => {
                                 self.remove_window(&surface_id);

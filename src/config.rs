@@ -201,6 +201,7 @@ pub struct Config {
     pub app_theme: AppTheme,
     pub dialog: DialogConfig,
     pub desktop: DesktopConfig,
+    pub desktop_output: DesktopOutput,
     pub context_actions: Vec<ContextActionPreset>,
     pub thumb_cfg: ThumbCfg,
     pub favorites: Vec<Favorite>,
@@ -257,6 +258,7 @@ impl Default for Config {
         Self {
             app_theme: AppTheme::System,
             desktop: DesktopConfig::default(),
+            desktop_output: DesktopOutput::default(),
             dialog: DialogConfig::default(),
             context_actions: Vec::new(),
             thumb_cfg: ThumbCfg::default(),
@@ -272,6 +274,33 @@ impl Default for Config {
             show_recents: true,
             tab: TabConfig::default(),
             type_to_search: TypeToSearch::Recursive,
+        }
+    }
+}
+
+/// Which display(s) show desktop icons.
+///
+/// Mirrors the panel's "Show on display" setting (`CosmicPanelOuput`) so the two
+/// read the same way in configuration and in any future settings UI.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, Deserialize, Serialize)]
+pub enum DesktopOutput {
+    /// Show desktop icons on every display.
+    #[default]
+    All,
+    /// Show desktop icons only on the named display, e.g. `Name("DP-1")`.
+    Name(String),
+}
+
+impl DesktopOutput {
+    /// Whether the display with this name should show desktop icons.
+    ///
+    /// An output that reported no name matches only `All`; there is nothing to
+    /// compare it against, and silently hiding icons everywhere would be worse
+    /// than showing them.
+    pub fn shows_on(&self, display: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Name(name) => name == display,
         }
     }
 }
